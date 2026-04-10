@@ -1,39 +1,59 @@
-import { publishToQueue } from "../config/rabbitmq.js";
+/**
+ * transaction.ts
+ *
+ * Uses otpId-based OTP for transaction verification.
+ * The otpId is returned to the frontend and passed back on verify.
+ *
+ * Changes from original:
+ * - publishOTPDelivery instead of direct email publish
+ * - createOTP / verifyOTP instead of raw Redis string ops
+ * - checkVerifyRateLimit wraps verify endpoint
+ * - Fixed _id.toString() TypeScript issue
+ */
+
 import TryCatch from "../config/TryCatch.js";
 import { redisClient } from "../index.js";
-import { User, IUser } from "../model/User.js"; // Ensure IUser is exported from your User model
-import { AuthenticatedRequest } from "../middleware/isAuth.js";
-import { Request } from "express";
-import { Response } from "express";
+import { User, type IUser } from "../model/User.js";
+import type { AuthenticatedRequest } from "../middleware/isAuth.js";
+import type { Request, Response } from "express";
 import bcrypt from "bcryptjs";
 import mongoose from "mongoose";
 import { Transaction } from "../model/Transaction.js";
 import { analytics } from "./user.js";
+import {
+  createOTP,
+  verifyOTP,
+  getOTPRecord,
+  isOnResendCooldown,
+  setResendCooldown,
+} from "../services/otpService.js";
+import {
+  resolveChannels,
+  publishOTPDelivery,
+} from "../services/deliveryService.js";
+import {
+  checkVerifyRateLimit,
+  extractClientIP,
+} from "../services/securityService.js";
 
-// TEMP transaction structure for Redis storage
+// ─── Types ─────────────────────────────────────────────────────────────────────
 interface ITempTransactionData {
-  senderId: string;
-  recipientId: string;
-  amount: number;
+  senderId:               string;
+  recipientId:            string;
+  amount:                 number;
   recipientAccountNumber: string;
 }
 
-// Generate a unique transaction ID
-const generateTransactionId = (): string => {
-  return `TRX${Date.now()}${Math.floor(1000 + Math.random() * 9000)}`;
-};
+const generateTransactionId = (): string =>
+  `TRX${Date.now()}${Math.floor(1000 + Math.random() * 9000)}`;
 
-
-// INITIATE TRANSACTION (OTP REQUEST)
-
+// ─── Initiate Transaction ──────────────────────────────────────────────────────
 export const initiateTransaction = TryCatch(
-  async (req: Request &  AuthenticatedRequest, res: Response) => {
+  async (req: Request & AuthenticatedRequest, res: Response) => {
     const { amount, password, recipientAccountNumber } = req.body;
-    const sender = req.user; // From isAuth middleware
+    const sender = req.user;
 
-    if (!sender) {
-      return res.status(401).json({ message: "User not authenticated" });
-    }
+    if (!sender) return res.status(401).json({ message: "Not authenticated" });
 
     if (!amount || !password || !recipientAccountNumber) {
       return res.status(400).json({
@@ -46,78 +66,39 @@ export const initiateTransaction = TryCatch(
       return res.status(400).json({ message: "Invalid transaction amount" });
     }
 
-    const userIp =
-  (req.headers["x-forwarded-for"] as string)?.split(",")[0]?.trim() ||
-  req.socket.remoteAddress ||
-  ""; //  added location
-    
-   // 1. FETCH SENDER — Ensure we have the latest user data
-    const senderUser = await User.findById<IUser>(sender._id).exec();
-    if (!senderUser) {
-      return res.status(404).json({ message: "Sender user not found" });
-    }
+    const clientIP = extractClientIP(req as any);
 
+    // ── Fetch sender ────────────────────────────────────────────────────────
+    const senderUser = await User.findById<IUser>(sender._id);
+    if (!senderUser) return res.status(404).json({ message: "Sender not found" });
 
-    // BALANCE CHECK
     if (senderUser.balance < transactionAmount) {
       return res.status(400).json({ message: "Insufficient balance" });
     }
 
-  //added location
-    const ipKey = `user:lastip:${senderUser._id}`;
-const lastIp = await redisClient.get(ipKey);
+    // ── Unknown location detection (unchanged from original) ───────────────
+    const ipKey   = `user:lastip:${senderUser._id.toString()}`;
+    const lastIp  = await redisClient.get(ipKey);
+    const isUnknownLocation = lastIp !== null && lastIp !== clientIP;
 
-const isUnknownLocation = lastIp !== null && lastIp !== userIp;
-//till
-//added
-      // 🔥 OTP expiry logic add karo
-     const LARGE_AMOUNT = 701;
+    const LARGE_AMOUNT = 701;
+    let otpTTL: number;
+    if (isUnknownLocation)              otpTTL = 60;
+    else if (transactionAmount >= LARGE_AMOUNT) otpTTL = 30;
+    else                                otpTTL = 300;
 
-let expirySeconds;
+    const expiryText =
+      otpTTL === 30  ? "30 seconds" :
+      otpTTL === 60  ? "1 minute"   : "5 minutes";
 
-if (isUnknownLocation) {
-  expirySeconds = 60; // 🌍 unknown → 1 min
-} else if (transactionAmount >= LARGE_AMOUNT) {
-  expirySeconds = 30; // 💰 large → 30 sec
-} else {
-  expirySeconds = 300; // 🙂 normal → 5 min
-}
-
-console.log("User IP:", userIp);
-console.log("Last IP:", lastIp);
-console.log("Unknown:", isUnknownLocation);
-console.log("Expiry:", expirySeconds);
-     // const expiryText = expirySeconds === 30 ? "30 seconds" : "5 minutes"; 
-     let expiryText;
-
-if (expirySeconds === 30) expiryText = "30 seconds";
-else if (expirySeconds === 60) expiryText = "1 minute";
-else expiryText = "5 minutes";
-
-//till
-
-    // // 1. FETCH SENDER — Ensure we have the latest user data
-    // const senderUser = await User.findById<IUser>(sender._id).exec();
-    // if (!senderUser) {
-    //   return res.status(404).json({ message: "Sender user not found" });
-    // }
-
-    // // BALANCE CHECK
-    // if (senderUser.balance < transactionAmount) {
-    //   return res.status(400).json({ message: "Insufficient balance" });
-    // }
-
-    // 3. PASSWORD VERIFY
+    // ── Password verify ─────────────────────────────────────────────────────
     const isPasswordValid = await bcrypt.compare(password, senderUser.password);
-    if (!isPasswordValid) {
-      return res.status(401).json({ message: "Incorrect password" });
-    }
+    if (!isPasswordValid) return res.status(401).json({ message: "Incorrect password" });
 
-    // 4. FETCH RECIPIENT
+    // ── Fetch recipient ─────────────────────────────────────────────────────
     const recipientUser = await User.findOne<IUser>({
       accountNumber: recipientAccountNumber,
-    }).exec();
-
+    });
     if (!recipientUser) {
       return res.status(404).json({ message: "Recipient account not found" });
     }
@@ -126,223 +107,204 @@ else expiryText = "5 minutes";
       return res.status(400).json({ message: "Cannot transfer to self" });
     }
 
-    // 5. OTP RATE LIMITING
-    const email = senderUser.email;
-    const rateLimitKey = `otp:transaction:ratelimit:${email}`;
-
-    const rateLimit = await redisClient.get(rateLimitKey);
-
-    if (rateLimit) {
+    // ── Resend cooldown ─────────────────────────────────────────────────────
+    const cooldown = await isOnResendCooldown(senderUser._id.toString(), "transaction");
+    if (cooldown.blocked) {
       return res.status(429).json({
-        message: "Too many OTP requests. Please wait before retrying.",
+        message: `Too many OTP requests. Wait ${cooldown.ttlSeconds}s.`,
+        cooldownSeconds: cooldown.ttlSeconds,
       });
     }
 
-    // 6. GENERATE & STORE OTP + TRANSACTION DATA IN REDIS
-    const otp = Math.floor(100000 + Math.random() * 900000).toString();
-    const otpKey = `otp:transaction:${email}`;
+    // ── Generate OTP + store transaction data ───────────────────────────────
+    const transactionId       = generateTransactionId();
+    const transactionDetailKey = `transaction:${transactionId}`;
 
-    // Use a pipeline for atomic Redis operations
-    const transactionId = generateTransactionId();
-    const transactionDetailsKey = `transaction:${transactionId}`;
-
-    const transactionData: ITempTransactionData = {
-      senderId: senderUser._id.toString(),
-      recipientId: recipientUser._id.toString(),
-      amount: transactionAmount,
+    const txData: ITempTransactionData = {
+      senderId:               senderUser._id.toString(),
+      recipientId:            recipientUser._id.toString(),
+      amount:                 transactionAmount,
       recipientAccountNumber,
     };
 
-    await redisClient
-      .multi()
-      .set(otpKey, otp, { EX: expirySeconds }) //added
-       .set(transactionDetailsKey, JSON.stringify(transactionData), { EX: expirySeconds }) //added
-      // .set(otpKey, otp, { EX: 300 }) // OTP valid for 5 minutes
-      // .set(transactionDetailsKey, JSON.stringify(transactionData), { EX: 300 }) // Temp data valid for 5 minutes
-      .set(rateLimitKey, "true", { EX: 60 }) // Rate limit for 1 minute
-      .exec();
+    const channels   = resolveChannels(senderUser.phoneNumber ?? undefined, false);
+    const { otpId, plainOtp } = await createOTP(
+      senderUser._id.toString(),
+      senderUser.email,
+      channels,
+      "transaction",
+      otpTTL
+    );
 
-      analytics.totalOTPGenerated += 1;
+    // Store temp transaction data alongside OTP TTL
+    await redisClient.set(
+      transactionDetailKey,
+      JSON.stringify({ ...txData, otpId }),
+      { EX: otpTTL }
+    );
 
-        const today = new Date().toLocaleDateString("en-US", {
-          weekday: "short",
-        });
+    await setResendCooldown(senderUser._id.toString(), "transaction");
 
-        analytics.dailyOTPData[today] =
-          (analytics.dailyOTPData[today] || 0) + 1;
-
-    await publishToQueue("send-otp", {
-      to: email,
-      subject: "Your Transaction OTP",
-      body: `Your OTP for transaction of ₹${transactionAmount} to ${recipientAccountNumber} is ${otp}, valid for ${expiryText}`,
+    // ── Publish (consumer handles retry/fallback) ───────────────────────────
+    const published = await publishOTPDelivery({
+      otpId,
+      email:  senderUser.email,
+      phone:  senderUser.phoneNumber ?? undefined,
+      otp:    plainOtp,
+      subject: "Transaction OTP — SecOTP",
+      body:   `Your OTP for transferring ₹${transactionAmount} to account ${recipientAccountNumber} is ${plainOtp}. Valid for ${expiryText}. Do NOT share this.`,
+      channels,
+      currentChannelIndex: 0,
+      retryCount: 0,
     });
 
-    // added location
-await redisClient.set(ipKey, userIp, { EX: 60 * 60 * 24 * 7 }); // 7 days
+    if (!published) {
+      await redisClient.del(transactionDetailKey);
+      return res.status(500).json({ message: "Failed to send OTP. Please try again." });
+    }
 
-    res.status(200).json({
-      message:
-        "OTP sent to your email. Please verify to complete the transaction.",
+    // ── Analytics ───────────────────────────────────────────────────────────
+    analytics.totalOTPGenerated += 1;
+    const today = new Date().toLocaleDateString("en-US", { weekday: "short" });
+    analytics.dailyOTPData[today] = (analytics.dailyOTPData[today] ?? 0) + 1;
+
+    // Update last IP
+    await redisClient.set(ipKey, clientIP, { EX: 60 * 60 * 24 * 7 });
+
+    return res.status(200).json({
+      message: `OTP sent to your ${channels[0]}. Verify to complete transaction.`,
+      otpId,           // ← frontend sends this back on verify
       transactionId,
-      expirySeconds,
+      expirySeconds: otpTTL,
+      deliveryChannel: channels[0],
     });
   }
 );
 
-
-// VERIFY OTP + COMPLETE TRANSACTION
-
+// ─── Verify Transaction OTP ────────────────────────────────────────────────────
 export const verifyTransactionOTP = TryCatch(
   async (req: AuthenticatedRequest, res: Response) => {
-    const { otp, transactionId } = req.body;
-    const sender = req.user; // From isAuth middleware
+    const { otpId, otp, transactionId } = req.body;
+    const sender = req.user;
 
-    if (!sender)
-      return res.status(401).json({ message: "User not authenticated" });
+    if (!sender) return res.status(401).json({ message: "Not authenticated" });
 
-    // 1. INPUT VALIDATION
-    if (!otp || !transactionId) {
-      return res.status(400).json({
-        message: "OTP and transaction ID are required",
+    if (!otpId || !otp || !transactionId) {
+      return res.status(400).json({ message: "otpId, otp, and transactionId are required" });
+    }
+
+    // ── Per-user rate limit ─────────────────────────────────────────────────
+    const limit = await checkVerifyRateLimit(sender._id.toString());
+    if (limit.blocked) {
+      return res.status(429).json({
+        message: `Too many attempts. Try again in ${Math.ceil(limit.ttlSeconds / 60)} minute(s).`,
       });
     }
 
-    const email = sender.email;
-    const otpKey = `otp:transaction:${email}`;
-    const transactionDetailsKey = `transaction:${transactionId}`;
-
-    // 2. OTP & TRANSACTION DATA VALIDATION
-    const storedOtp = await redisClient.get(otpKey);
-
-    if (!storedOtp || storedOtp !== otp) {
-  analytics.failedAttempts += 1;
-
-  const today = new Date().toLocaleDateString("en-US", {
-    weekday: "short",
-  });
-
-  if (analytics.failedAttempts % 5 === 0) {
-    analytics.blockedUsers += 1;
-
-    analytics.blockedUserTrend[today] =
-      (analytics.blockedUserTrend[today] || 0) + 1;
-  }
-
-  await redisClient.del(otpKey);
-
-  return res.status(400).json({
-    message: "Invalid or expired OTP",
-  });
-}
-
-    const storedTransactionData = await redisClient.get(transactionDetailsKey);
-
-    if (!storedTransactionData) {
-      await redisClient.del(otpKey); // Clean up OTP if transaction data is missing
+    // ── Fetch + validate transaction data ───────────────────────────────────
+    const transactionDetailKey = `transaction:${transactionId}`;
+    const rawTx = await redisClient.get(transactionDetailKey);
+    if (!rawTx) {
       return res.status(400).json({
         message: "Transaction expired or not found. Please initiate again.",
       });
     }
 
-    // Clean up Redis keys immediately after validation to prevent replay attacks
-    await redisClient.del(otpKey);
-    await redisClient.del(transactionDetailsKey);
-    analytics.totalVerified += 1;
+    const txData = JSON.parse(rawTx) as ITempTransactionData & { otpId: string };
 
-    const transactionData = JSON.parse(
-      storedTransactionData
-    ) as ITempTransactionData;
-
-    // 3. AUTHORIZATION CHECK
-    if (transactionData.senderId !== sender._id.toString()) {
-      return res
-        .status(403)
-        .json({ message: "Unauthorized transaction attempt" });
+    // Make sure the otpId matches what we stored for this transaction
+    if (txData.otpId !== otpId) {
+      return res.status(400).json({ message: "OTP ID mismatch. Please initiate again." });
     }
 
-    // 4. ATOMIC DATABASE TRANSACTION
+    // ── Verify OTP ───────────────────────────────────────────────────────────
+    const verifyResult = await verifyOTP(otpId, otp);
+
+    if (!verifyResult.ok) {
+      analytics.failedAttempts += 1;
+      const today = new Date().toLocaleDateString("en-US", { weekday: "short" });
+      if (analytics.failedAttempts % 5 === 0) {
+        analytics.blockedUsers += 1;
+        analytics.blockedUserTrend[today] = (analytics.blockedUserTrend[today] ?? 0) + 1;
+      }
+
+      const messages: Record<string, string> = {
+        not_found:    "OTP not found or expired.",
+        expired:      "OTP has expired. Please initiate the transaction again.",
+        max_attempts: "Too many failed attempts. Please initiate the transaction again.",
+        wrong_otp:    "Incorrect OTP.",
+      };
+
+      return res.status(400).json({ message: messages[verifyResult.reason] ?? "OTP verification failed." });
+    }
+
+    // ── Authorization: sender must match OTP owner ──────────────────────────
+    if (txData.senderId !== sender._id.toString()) {
+      return res.status(403).json({ message: "Unauthorized transaction attempt" });
+    }
+
+    // Clean up transaction key
+    await redisClient.del(transactionDetailKey);
+    analytics.totalVerified += 1;
+
+    // ── Atomic DB transaction ────────────────────────────────────────────────
     const session = await mongoose.startSession();
     session.startTransaction();
 
     try {
-      // Re-fetch users inside the transaction to lock the documents and get the latest balance
-      const senderUser = await User.findById(transactionData.senderId).session(
-        session
-      );
-      const recipientUser = await User.findById(
-        transactionData.recipientId
-      ).session(session);
+      const senderUser    = await User.findById(txData.senderId).session(session);
+      const recipientUser = await User.findById(txData.recipientId).session(session);
 
-      if (!senderUser || !recipientUser) {
-        throw new Error("Sender or recipient not found.");
-      }
+      if (!senderUser || !recipientUser) throw new Error("Sender or recipient not found.");
+      if (senderUser.balance < txData.amount) throw new Error("Insufficient balance.");
 
-      // Re-verify balance inside the transaction to prevent race conditions
-      if (senderUser.balance < transactionData.amount) {
-        throw new Error("Insufficient balance.");
-      }
-
-      // Perform the balance update
-      senderUser.balance -= transactionData.amount;
-      recipientUser.balance += transactionData.amount;
+      senderUser.balance    -= txData.amount;
+      recipientUser.balance += txData.amount;
 
       await senderUser.save({ session });
       await recipientUser.save({ session });
 
-      // Create the permanent transaction record
-      const newTransaction = new Transaction({
+      const newTx = new Transaction({
         transactionId,
-        sender: senderUser._id,
+        sender:    senderUser._id,
         recipient: recipientUser._id,
-        amount: transactionData.amount,
-        type: "transfer",
-        status: "completed",
+        amount:    txData.amount,
+        type:      "transfer",
+        status:    "completed",
       });
-      await newTransaction.save({ session });
+      await newTx.save({ session });
 
-      // If all operations succeed, commit the transaction
       await session.commitTransaction();
 
-      res.status(200).json({
+      return res.status(200).json({
         message: "Transaction completed successfully!",
         transaction: {
-          id: transactionId,
-          amount: transactionData.amount,
-          sender: senderUser.email,
+          id:        transactionId,
+          amount:    txData.amount,
+          sender:    senderUser.email,
           recipient: recipientUser.email,
         },
       });
     } catch (error) {
-      // If any operation fails, abort the entire transaction
       await session.abortTransaction();
-      const errorMessage =
-        error instanceof Error
-          ? error.message
-          : "An unknown error occurred during the transaction.";
-      // Use a 400 status for known business logic failures, 500 for unexpected ones
-      const statusCode = errorMessage === "Insufficient balance." ? 400 : 500;
-      res
-        .status(statusCode)
-        .json({ message: `Transaction failed: ${errorMessage}` });
+      const msg = error instanceof Error ? error.message : "Unknown error.";
+      return res.status(msg === "Insufficient balance." ? 400 : 500).json({
+        message: `Transaction failed: ${msg}`,
+      });
     } finally {
-      // Always end the session
       session.endSession();
     }
   }
 );
 
-// GET TRANSACTION HISTORY (READ API)
-
+// ─── Transaction History ────────────────────────────────────────────────────────
 export const getTransactionHistory = TryCatch(
   async (req: AuthenticatedRequest, res: Response) => {
     const userId = req.user._id;
+    const page   = parseInt(req.query.page as string) || 1;
+    const limit  = parseInt(req.query.limit as string) || 10;
+    const skip   = (page - 1) * limit;
 
-    // Pagination parameters
-    const page = parseInt(req.query.page as string) || 1;
-    const limit = parseInt(req.query.limit as string) || 10;
-    const skip = (page - 1) * limit;
-
-    // Get total count for pagination metadata
     const totalCount = await Transaction.countDocuments({
       $or: [{ sender: userId }, { recipient: userId }],
     });
@@ -350,20 +312,20 @@ export const getTransactionHistory = TryCatch(
     const transactions = await Transaction.find({
       $or: [{ sender: userId }, { recipient: userId }],
     })
-      .sort({ createdAt: -1 })     // latest first
+      .sort({ createdAt: -1 })
       .skip(skip)
       .limit(limit)
-      .populate("sender", "email accountNumber")
+      .populate("sender",    "email accountNumber")
       .populate("recipient", "email accountNumber");
 
-    res.status(200).json({
+    return res.status(200).json({
       transactions,
       pagination: {
         page,
         limit,
         totalCount,
         totalPages: Math.ceil(totalCount / limit),
-        hasMore: page < Math.ceil(totalCount / limit),
+        hasMore:    page < Math.ceil(totalCount / limit),
       },
     });
   }

@@ -1,46 +1,58 @@
 import { useState, useEffect } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
-import { transactionAPI, authHelpers } from "../services/api";
+import { authAPI } from "../services/api";
 import { useCountdown, formatCountdown } from "../hooks/useAuth";
 
-export const TransactionOTPVerification = () => {
-  const navigate  = useNavigate();
-  const location  = useLocation();
+function channelLabel(ch) {
+  if (ch === "sms")   return "📱 SMS";
+  if (ch === "voice") return "📞 Voice call";
+  return "📧 Email";
+}
 
-  const otpId         = location.state?.otpId         ?? "";
-  const transactionId = location.state?.transactionId  ?? "";
-  const expirySeconds = location.state?.expirySeconds  ?? 300;
+export const RegistrationOTPVerification = () => {
+  const navigate = useNavigate();
+  const location = useLocation();
+
+  const otpId           = location.state?.otpId           ?? "";
+  const email           = location.state?.email           ?? "";
   const deliveryChannel = location.state?.deliveryChannel ?? "email";
 
-  const { timeLeft } = useCountdown(expirySeconds);
+  const { timeLeft } = useCountdown(600); // 10 minutes
 
   const [otp,     setOtp]     = useState("");
   const [loading, setLoading] = useState(false);
   const [error,   setError]   = useState("");
 
   useEffect(() => {
-    if (!authHelpers.isAuthenticated() || !otpId || !transactionId) {
-      navigate("/", { replace: true });
+    if (!otpId) {
+      navigate("/signup", { replace: true });
     }
-  }, [otpId, transactionId, navigate]);
+  }, [otpId, navigate]);
 
   const handleVerify = async (e) => {
     e.preventDefault();
     setError("");
 
     if (!otp.trim() || otp.trim().length !== 6) {
-      setError("Please enter a 6-digit OTP.");
+      setError("Please enter the 6-digit OTP.");
       return;
     }
     if (timeLeft === 0) {
-      setError("OTP has expired. Please initiate the transaction again.");
+      setError("OTP has expired. Please sign up again.");
       return;
     }
 
     setLoading(true);
     try {
-      await transactionAPI.verifyTransaction(otpId, otp.trim(), transactionId);
-      navigate("/home", { replace: true });
+      const response = await authAPI.verifyRegistration(otpId, otp.trim());
+
+      navigate("/account-success", {
+        replace: true,
+        state: {
+          accountNumber: response.user.accountNumber,
+          email:         response.user.email,
+        },
+      });
     } catch (err) {
       setError(err.message || "Verification failed. Please try again.");
     } finally {
@@ -50,25 +62,26 @@ export const TransactionOTPVerification = () => {
 
   const isExpired = timeLeft === 0;
 
-  function channelLabel(ch) {
-    if (ch === "sms")   return "📱 SMS";
-    if (ch === "voice") return "📞 Voice call";
-    return "📧 Email";
-  }
-
   return (
     <div className="min-h-screen flex items-center justify-center bg-gray-50 px-4">
       <div className="bg-white rounded-2xl shadow-md w-full max-w-md p-8">
 
         <h2 className="text-2xl font-semibold text-gray-800 mb-1">
-          Verify Transaction
+          Verify your email
         </h2>
-        <p className="text-gray-500 text-sm mb-6">
+        <p className="text-gray-500 text-sm mb-4">
           OTP sent via{" "}
           <span className="font-medium text-blue-600">
             {channelLabel(deliveryChannel)}
-          </span>{" "}
-          to confirm your transfer.
+          </span>
+          {email && (
+            <>
+              {" "}to <span className="font-medium">{email}</span>
+            </>
+          )}
+        </p>
+        <p className="text-gray-400 text-xs mb-6">
+          Complete registration by entering the OTP below.
         </p>
 
         {/* Expiry timer */}
@@ -124,17 +137,19 @@ export const TransactionOTPVerification = () => {
                 Verifying…
               </>
             ) : (
-              "Confirm Transaction"
+              "Create Account"
             )}
           </button>
         </form>
 
         <button
           type="button"
-          onClick={() => navigate("/transfer")}
+          onClick={() => {
+            navigate("/signup");
+          }}
           className="mt-3 w-full py-2 text-sm text-gray-500 hover:text-gray-700 transition"
         >
-          ← Back to Transfer
+          ← Back to Sign Up
         </button>
       </div>
     </div>

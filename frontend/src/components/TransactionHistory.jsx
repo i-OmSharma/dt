@@ -1,134 +1,159 @@
-// src/components/TransactionHistory.jsx
-import React, { useEffect, useState } from "react";
+import { useState, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
-import { userAPI, transactionAPI, authHelpers } from "../services/api";
+import { transactionAPI, authHelpers, userAPI } from "../services/api";
 
 export function TransactionHistory() {
   const navigate = useNavigate();
 
-  const [loading, setLoading] = useState(true);
-  const [user, setUser] = useState(null);
-  const [balance, setBalance] = useState(0);
   const [transactions, setTransactions] = useState([]);
+  const [loading,      setLoading]      = useState(true);
+  const [error,        setError]        = useState("");
+  const [currentUser,  setCurrentUser]  = useState(null);
+  const [page,         setPage]         = useState(1);
+  const [hasMore,      setHasMore]      = useState(true);
+
+  const LIMIT = 10;
 
   useEffect(() => {
     if (!authHelpers.isAuthenticated()) {
-      navigate("/");
+      navigate("/", { replace: true });
       return;
     }
 
-    loadData();
-  }, []);
+    const init = async () => {
+      try {
+        const [profile, txData] = await Promise.all([
+          userAPI.getProfile(),
+          transactionAPI.getHistory(1, LIMIT),
+        ]);
+        setCurrentUser(profile);
+        setTransactions(txData.transactions || []);
+        setHasMore((txData.transactions || []).length === LIMIT);
+      } catch {
+        authHelpers.logout();
+        navigate("/", { replace: true });
+      } finally {
+        setLoading(false);
+      }
+    };
 
-  const loadData = async () => {
+    init();
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const loadMore = async () => {
+    const nextPage = page + 1;
     try {
-      setLoading(true);
-
-      // 1️⃣ Profile
-      const profile = await userAPI.getProfile();
-      setUser(profile);
-
-      // 2️⃣ Balance
-      const bal = await userAPI.getBalance();
-      setBalance(bal.balance);
-
-      // 3️⃣ Transactions
-      const tx = await transactionAPI.getHistory();
-      setTransactions(tx.transactions || []);
+      const txData = await transactionAPI.getHistory(nextPage, LIMIT);
+      const newer = txData.transactions || [];
+      setTransactions((prev) => [...prev, ...newer]);
+      setHasMore(newer.length === LIMIT);
+      setPage(nextPage);
     } catch (err) {
-      authHelpers.logout();
-      navigate("/");
-    } finally {
-      setLoading(false);
+      setError(err.message || "Failed to load more transactions.");
     }
-  };
-
-  // Mask account number (logic only)
-  const maskAccountNumber = (accNum) => {
-    if (!accNum) return "•••• •••• •••• 0000";
-    return "•••• •••• •••• " + accNum.slice(-4);
   };
 
   if (loading) {
     return (
-      <div className="flex min-h-screen bg-gray-50 items-center justify-center">
-        Loading...
+      <div className="flex min-h-screen items-center justify-center bg-gray-50">
+        Loading…
       </div>
     );
   }
 
   return (
-    <div className="flex min-h-screen bg-gray-50">
-      <div className="flex flex-col w-full h-screen">
-        <main className="flex-1 p-6 overflow-y-auto">
-          {/* Header */}
-          <div className="flex justify-between items-center mb-6">
-            <div>
-              <h1 className="text-2xl font-semibold">Transaction History</h1>
-              <p className="text-gray-600">
-                See your bank details and transactions.
-              </p>
-            </div>
-          </div>
+    <div className="min-h-screen bg-gray-50 p-6">
+      <h2 className="text-2xl font-bold text-gray-800 mb-1">Transaction History</h2>
+      <p className="text-gray-500 text-sm mb-6">All your past transactions in one place.</p>
 
-          {/* Account Card */}
-          <div className="bg-blue-600 text-white rounded-lg p-4 flex justify-between items-center">
-            <div>
-              <h2 className="text-lg font-bold">
-                {user?.name || "Primary Account"}
-              </h2>
-              <p className="text-sm">
-                Account Gold Standard 0% Interest Checking
-              </p>
-              <p className="text-sm mt-1">
-                {maskAccountNumber(user?.accountNumber)}
-              </p>
-            </div>
-            <p className="text-xl font-bold">₹{balance.toFixed(2)}</p>
-          </div>
+      {error && (
+        <div className="mb-4 p-3 bg-red-50 border border-red-200 text-red-700 rounded-lg text-sm">
+          {error}
+        </div>
+      )}
 
-          {/* Transactions Table */}
-          <div className="bg-white mt-6 rounded-lg shadow p-4">
-            <h3 className="text-lg font-semibold mb-4">Transactions</h3>
-            <table className="w-full text-left">
-              <thead>
-                <tr className="border-b text-gray-600">
-                  <th className="py-2">Transaction</th>
-                  <th className="py-2">Amount</th>
-                  <th className="py-2">Status</th>
-                  <th className="py-2">Date</th>
-                  <th className="py-2">Channel</th>
-                  <th className="py-2">Category</th>
-                </tr>
-              </thead>
-              <tbody>
-                {transactions.length === 0 ? (
-                  <tr>
-                    <td colSpan="6" className="text-center py-6 text-gray-500">
-                      No transactions yet. Start by transferring funds.
+      <div className="bg-white rounded-2xl shadow overflow-x-auto">
+        <table className="min-w-full">
+          <thead className="border-b text-gray-600 text-sm">
+            <tr>
+              <th className="px-4 py-3 text-left">Transaction ID</th>
+              <th className="px-4 py-3 text-left">Amount (₹)</th>
+              <th className="px-4 py-3 text-left">Type</th>
+              <th className="px-4 py-3 text-left">Status</th>
+              <th className="px-4 py-3 text-left">Date</th>
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-gray-100 text-sm">
+            {transactions.length === 0 ? (
+              <tr>
+                <td colSpan="5" className="text-center text-gray-400 py-8">
+                  No transactions yet.
+                </td>
+              </tr>
+            ) : (
+              transactions.map((t) => {
+                const isDebit = currentUser && t.sender?.email === currentUser.email;
+                return (
+                  <tr key={t.transactionId} className="hover:bg-gray-50">
+                    <td className="px-4 py-3 font-mono text-xs text-gray-500">
+                      {t.transactionId}
+                    </td>
+                    <td className="px-4 py-3 font-semibold">
+                      {isDebit ? (
+                        <span className="text-red-600">− ₹{t.amount}</span>
+                      ) : (
+                        <span className="text-green-600">+ ₹{t.amount}</span>
+                      )}
+                    </td>
+                    <td className="px-4 py-3">
+                      <span
+                        className={`px-2 py-0.5 rounded-full text-xs font-medium ${
+                          isDebit
+                            ? "bg-red-50 text-red-600"
+                            : "bg-green-50 text-green-600"
+                        }`}
+                      >
+                        {isDebit ? "Debit" : "Credit"}
+                      </span>
+                    </td>
+                    <td className="px-4 py-3">
+                      <span
+                        className={`px-2 py-0.5 rounded-full text-xs font-medium ${
+                          t.status === "completed"
+                            ? "bg-green-50 text-green-700"
+                            : t.status === "failed"
+                            ? "bg-red-50 text-red-700"
+                            : "bg-yellow-50 text-yellow-700"
+                        }`}
+                      >
+                        {t.status}
+                      </span>
+                    </td>
+                    <td className="px-4 py-3 text-gray-500">
+                      {new Date(t.createdAt).toLocaleDateString("en-IN", {
+                        day: "2-digit",
+                        month: "short",
+                        year: "numeric",
+                      })}
                     </td>
                   </tr>
-                ) : (
-                  transactions.map((t) => (
-                    <tr key={t.transactionId} className="border-b">
-                      <td className="py-2">{t.transactionId}</td>
-                      <td className="py-2">₹{t.amount}</td>
-                      <td className="py-2">{t.status}</td>
-                      <td className="py-2">
-                        {new Date(t.createdAt).toLocaleDateString()}
-                      </td>
-                      <td className="py-2">
-                        {t.sender.email === user.email ? "Debit" : "Credit"}
-                      </td>
-                      <td className="py-2">Transfer</td>
-                    </tr>
-                  ))
-                )}
-              </tbody>
-            </table>
-          </div>
-        </main>
+                );
+              })
+            )}
+          </tbody>
+        </table>
       </div>
+
+      {hasMore && transactions.length > 0 && (
+        <div className="mt-4 text-center">
+          <button
+            onClick={loadMore}
+            className="px-6 py-2 bg-blue-600 text-white text-sm font-medium rounded-lg hover:bg-blue-700 transition"
+          >
+            Load more
+          </button>
+        </div>
+      )}
     </div>
   );
 }

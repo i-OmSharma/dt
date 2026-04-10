@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from "react";
+import { useState, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
 import { transactionAPI, authHelpers, userAPI } from "../services/api";
 
@@ -6,60 +6,65 @@ export function TransferFunds() {
   const navigate = useNavigate();
 
   const [recipientAccountNumber, setRecipientAccountNumber] = useState("");
-  const [amount, setAmount] = useState("");
-  const [password, setPassword] = useState("");
-  const [loading, setLoading] = useState(false);
-  const [currentUser, setCurrentUser] = useState(null);
+  const [amount,                  setAmount]                  = useState("");
+  const [password,                setPassword]                = useState("");
+  const [loading,                 setLoading]                 = useState(false);
+  const [error,                   setError]                   = useState("");
+  const [currentUser,             setCurrentUser]             = useState(null);
 
   useEffect(() => {
-    const fetchCurrentUser = async () => {
-      try {
-        const profile = await userAPI.getProfile();
-        setCurrentUser(profile);
-      } catch (err) {
-        console.error("Failed to fetch user profile:", err);
-      }
-    };
-    fetchCurrentUser();
-  }, []);
+    if (!authHelpers.isAuthenticated()) {
+      navigate("/", { replace: true });
+      return;
+    }
+    userAPI.getProfile()
+      .then(setCurrentUser)
+      .catch(() => {/* non-critical */});
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   const handleSubmit = async (e) => {
     e.preventDefault();
+    setError("");
 
-    // Trim whitespace from account number
-    const trimmedRecipientAccount = recipientAccountNumber.trim();
+    const trimmedAccount = recipientAccountNumber.trim();
 
-    // Frontend validation to prevent self-transfer
-    if (currentUser && trimmedRecipientAccount === currentUser.accountNumber) {
-      alert("Cannot transfer to your own account. Please enter a different account number.");
+    if (currentUser && trimmedAccount === currentUser.accountNumber) {
+      setError("Cannot transfer to your own account.");
+      return;
+    }
+    if (!trimmedAccount || !amount || !password) {
+      setError("All fields are required.");
+      return;
+    }
+    const amt = parseFloat(amount);
+    if (isNaN(amt) || amt <= 0) {
+      setError("Enter a valid amount.");
       return;
     }
 
-    if (!trimmedRecipientAccount || !amount || !password) {
-      alert("Please fill in all fields");
-      return;
-    }
-
+    setLoading(true);
     try {
-      setLoading(true);
-
       const res = await transactionAPI.initiateTransaction({
-        recipientAccountNumber: trimmedRecipientAccount,
+        recipientAccountNumber: trimmedAccount,
         amount,
         password,
       });
 
-      // navigate to OTP verification page
+      // Navigate with both otpId AND transactionId
       navigate("/transaction-otp", {
-        state: { transactionId: res.transactionId,
-          expirySeconds: res.expirySeconds,//added
+        state: {
+          otpId:           res.otpId,
+          transactionId:   res.transactionId,
+          expirySeconds:   res.expirySeconds,
+          deliveryChannel: res.deliveryChannel ?? "email",
         },
       });
     } catch (err) {
-      alert(err.message || "Transaction failed");
-      if (err.message?.includes("Unauthorized")) {
+      if (err.message?.toLowerCase().includes("session")) {
         authHelpers.logout();
-        navigate("/");
+        navigate("/", { replace: true });
+      } else {
+        setError(err.message || "Transaction failed. Please try again.");
       }
     } finally {
       setLoading(false);
@@ -67,107 +72,97 @@ export function TransferFunds() {
   };
 
   return (
-    <div className="flex min-h-screen bg-gray-100">
-      <main className="flex-1 p-6">
-        <h2 className="text-2xl font-bold mb-2">Payment Transfer</h2>
-        <p className="text-gray-500 mb-6">
-          Please provide any specific details or notes related to the payment
-          transfer
+    <div className="min-h-screen bg-gray-50">
+      <main className="p-6 max-w-2xl">
+        <h2 className="text-2xl font-bold text-gray-800 mb-1">Payment Transfer</h2>
+        <p className="text-gray-500 text-sm mb-6">
+          Securely transfer funds to any account. An OTP will be sent to verify the transaction.
         </p>
 
-        {/* Current User Info */}
+        {/* ── Sender info ─────────────────────────────────────────────────── */}
         {currentUser && (
-          <div className="bg-blue-50 border border-blue-200 rounded-lg p-4 mb-6 max-w-2xl">
-            <h3 className="text-sm font-semibold text-blue-800 mb-2">Sending From:</h3>
-            <p className="text-blue-700">
-              <span className="font-medium">{currentUser.name}</span> ({currentUser.email})
-            </p>
-            <p className="text-blue-600 font-mono text-sm mt-1">
-              Account: {currentUser.accountNumber}
-            </p>
+          <div className="bg-blue-50 border border-blue-200 rounded-xl p-4 mb-6 text-sm">
+            <p className="text-blue-700 font-semibold mb-0.5">Sending from</p>
+            <p className="text-blue-800 font-medium">{currentUser.name}</p>
+            <p className="text-blue-600 font-mono text-xs">{currentUser.accountNumber}</p>
           </div>
         )}
 
-        <form
-          onSubmit={handleSubmit}
-          className="bg-white rounded-lg shadow p-6 max-w-2xl"
-        >
-          {/* Transfer details */}
-          <div className="mb-6">
-            <h3 className="text-lg font-semibold mb-4">Transfer details</h3>
-
-            <label className="block text-sm font-medium text-gray-700 mb-1">
-              Select Source Bank
-            </label>
-            <select
-              defaultValue=""
-              className="w-full border border-gray-300 rounded-lg px-3 py-2 mb-4 focus:outline-none focus:ring-2 focus:ring-blue-500 text-black"
-            >
-              <option value="" disabled>
-                -- Select Source Bank --
-              </option>
-              <option value="savings">Savings Account</option>
-              <option value="credit">Credit Card</option>
-            </select>
-
-            <label className="block text-sm font-medium text-gray-700 mb-1">
-              Transfer Note (Optional)
-            </label>
-            <textarea
-              className="w-full border border-gray-300 rounded-lg px-3 py-2 h-20 resize-none focus:outline-none focus:ring-2 focus:ring-blue-500"
-              placeholder="Write a short note here"
-            />
+        {/* ── Error ───────────────────────────────────────────────────────── */}
+        {error && (
+          <div className="mb-4 p-3 bg-red-50 border border-red-200 text-red-700 rounded-lg text-sm">
+            {error}
           </div>
+        )}
 
-          {/* Bank account details */}
-          <div className="mb-6">
-            <h3 className="text-lg font-semibold mb-4">
-              Bank account details
-            </h3>
+        <form onSubmit={handleSubmit} noValidate className="bg-white rounded-2xl shadow p-6 space-y-5">
 
+          {/* Recipient account */}
+          <div>
             <label className="block text-sm font-medium text-gray-700 mb-1">
-              Receiver's Account Number
+              Recipient Account Number
             </label>
             <input
               type="text"
               value={recipientAccountNumber}
-              onChange={(e) => setRecipientAccountNumber(e.target.value)}
-              placeholder="Enter the recipient's account number"
-              className="w-full border border-gray-300 rounded-lg px-3 py-2 mb-1 focus:outline-none focus:ring-2 focus:ring-blue-500"
+              onChange={(e) => { setError(""); setRecipientAccountNumber(e.target.value); }}
+              placeholder="ACC..."
+              disabled={loading}
+              className="w-full border border-gray-300 rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-400 disabled:bg-gray-50"
             />
-            <p className="text-xs text-gray-500 mb-4">
-              Note: You cannot transfer to your own account
-            </p>
+            <p className="text-xs text-gray-400 mt-1">You cannot transfer to your own account.</p>
+          </div>
 
+          {/* Amount */}
+          <div>
             <label className="block text-sm font-medium text-gray-700 mb-1">
-              Amount
+              Amount (₹)
             </label>
             <input
               type="number"
               value={amount}
-              onChange={(e) => setAmount(e.target.value)}
-              placeholder="ex: 500"
-              className="w-full border border-gray-300 rounded-lg px-3 py-2 mb-4 focus:outline-none focus:ring-2 focus:ring-blue-500"
+              onChange={(e) => { setError(""); setAmount(e.target.value); }}
+              placeholder="e.g. 500"
+              min="1"
+              disabled={loading}
+              className="w-full border border-gray-300 rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-400 disabled:bg-gray-50"
             />
+          </div>
 
+          {/* Password */}
+          <div>
             <label className="block text-sm font-medium text-gray-700 mb-1">
               Your Account Password
             </label>
             <input
               type="password"
               value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              placeholder="Enter your password"
-              className="w-full border border-gray-300 rounded-lg px-3 py-2 mb-4 focus:outline-none focus:ring-2 focus:ring-blue-500"
+              onChange={(e) => { setError(""); setPassword(e.target.value); }}
+              placeholder="Enter your password to authorise"
+              disabled={loading}
+              className="w-full border border-gray-300 rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-400 disabled:bg-gray-50"
             />
+          </div>
+
+          {/* Info box */}
+          <div className="bg-amber-50 border border-amber-200 rounded-lg p-3 text-xs text-amber-700">
+            ℹ️ An OTP will be sent to verify this transaction. Large amounts or logins from new locations may have shorter OTP validity.
           </div>
 
           <button
             type="submit"
             disabled={loading}
-            className="w-full bg-blue-600 text-white py-2 rounded-lg font-semibold hover:bg-blue-700"
+            className="w-full py-3 bg-blue-600 hover:bg-blue-700 text-white font-semibold rounded-xl transition
+              disabled:bg-blue-300 disabled:cursor-not-allowed flex items-center justify-center gap-2"
           >
-            {loading ? "Processing..." : "Transfer Funds"}
+            {loading ? (
+              <>
+                <span className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" />
+                Processing…
+              </>
+            ) : (
+              "Continue to OTP Verification →"
+            )}
           </button>
         </form>
       </main>

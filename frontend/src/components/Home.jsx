@@ -1,14 +1,16 @@
 import React, { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { userAPI, authHelpers, transactionAPI } from "../services/api";
+import { VerifyContactOverlay } from "./VerifyContactOverlay";
 
 export function Home() {
   const navigate = useNavigate();
 
-  const [loading, setLoading] = useState(true);
-  const [user, setUser] = useState(null);
-  const [balance, setBalance] = useState(0);
-  const [transactions, setTransactions] = useState([]);
+  const [loading,           setLoading]           = useState(true);
+  const [user,              setUser]              = useState(null);
+  const [balance,           setBalance]           = useState(0);
+  const [transactions,      setTransactions]      = useState([]);
+  const [showVerifyOverlay, setShowVerifyOverlay] = useState(false);
 
   useEffect(() => {
     if (!authHelpers.isAuthenticated()) {
@@ -17,7 +19,7 @@ export function Home() {
     }
 
     loadHomeData();
-  });
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   const loadHomeData = async () => {
     try {
@@ -26,6 +28,11 @@ export function Home() {
       //  Profile
       const profile = await userAPI.getProfile();
       setUser(profile);
+
+      // Show overlay if either contact is unverified
+      if (!profile.emailVerified || !profile.phoneVerified) {
+        setShowVerifyOverlay(true);
+      }
 
       //  Balance
       const bal = await userAPI.getBalance();
@@ -79,6 +86,14 @@ export function Home() {
         >
           Make Payment
         </button>
+
+        {/* Verify contact overlay */}
+        {showVerifyOverlay && user && (
+          <VerifyContactOverlay
+            user={user}
+            onComplete={() => setShowVerifyOverlay(false)}
+          />
+        )}
 
         {/* Recent Transactions section */}
         <div>
