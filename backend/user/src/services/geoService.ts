@@ -7,11 +7,17 @@
  * - DB (MongoDB): lastLoginLocation — survives Redis eviction/restart
  * - Redis: cache of geo lookup result (15 min TTL) to avoid hammering ip-api.com
  *
+ * IP strategy:
+ *   Private/loopback IP (::1, 127.0.0.1, 192.168.x, 10.x, 172.16-31.x)
+ *     → call ip-api.com with no IP param so it resolves the server's own
+ *       public IP — gives real location in local dev
+ *   Real user IP → pass IP to ip-api.com as normal
+ *
  * Risk levels:
  *   HIGH   → different country
  *   MEDIUM → same country, different region/state
  *   LOW    → same country+region, city/distance differs (>500km)
- *   NONE   → same region / local IP
+ *   NONE   → same region
  */
 
 import { redisClient } from "../index.js";
@@ -53,23 +59,17 @@ function isPrivateIP(ip: string): boolean {
 
 // ─── IP Geo lookup (ip-api.com, free tier, no key) ────────────────────────────
 async function fetchGeoLocation(ip: string): Promise<GeoLocation | null> {
-  // Return synthetic local record for private/loopback IPs
-  if (isPrivateIP(ip)) {
-    return {
-      ip,
-      country: "Local",
-      countryCode: "LO",
-      region: "LO",
-      regionName: "Local Network",
-      city: "Local",
-      lat: 0,
-      lon: 0,
-      isp: "Local",
-    };
-  }
+  const isPrivate = isPrivateIP(ip);
 
-  // Check Redis cache first (15 min TTL)
-  const cacheKey = `geo:cache:${ip}`;
+  // Private/localhost IP → call without IP param so ip-api.com sees the
+  // server's own public IP and returns the server's real location.
+  // Real user IP → call with IP param as normal.
+  const url = isPrivate
+    ? "http://ip-api.com/json/?fields=status,country,countryCode,region,regionName,city,lat,lon,isp,query"
+    : `http://ip-api.com/json/${ip}?fields=status,country,countryCode,region,regionName,city,lat,lon,isp,query`;
+
+  // Use "self" as cache key for local dev so all loopback hits share one slot
+  const cacheKey = `geo:cache:${isPrivate ? "self" : ip}`;
   try {
     const cached = await redisClient.get(cacheKey);
     if (cached) return JSON.parse(cached) as GeoLocation;
@@ -79,10 +79,7 @@ async function fetchGeoLocation(ip: string): Promise<GeoLocation | null> {
   const timer = setTimeout(() => controller.abort(), 5000);
 
   try {
-    const res = await fetch(
-      `http://ip-api.com/json/${ip}?fields=status,country,countryCode,region,regionName,city,lat,lon,isp,query`,
-      { signal: controller.signal }
-    );
+    const res = await fetch(url, { signal: controller.signal });
     clearTimeout(timer);
 
     if (!res.ok) return null;
@@ -106,6 +103,8 @@ async function fetchGeoLocation(ip: string): Promise<GeoLocation | null> {
     try {
       await redisClient.set(cacheKey, JSON.stringify(geo), { EX: 900 });
     } catch { /* non-critical */ }
+
+    console.log(`[GeoService] Detected: ${geo.city}, ${geo.regionName}, ${geo.country} (IP: ${geo.ip})`);
 
     return geo;
   } catch (err: any) {
@@ -150,10 +149,8 @@ export async function assessGeoRisk(
 
   const skipRisk =
     !currentLocation ||
-    currentLocation.countryCode === "LO" || // local IP
     !previousLocation ||
-    previousLocation.countryCode === "??" ||
-    previousLocation.countryCode === "LO";  // first login or local previous
+    previousLocation.countryCode === "??";  // first login — no baseline yet
 
   if (!skipRisk && currentLocation && previousLocation) {
     if (currentLocation.countryCode !== previousLocation.countryCode) {
@@ -178,7 +175,7 @@ export async function assessGeoRisk(
   }
 
   // ── Persist current location to DB (always update) ─────────────────────────
-  if (currentLocation && currentLocation.countryCode !== "LO") {
+  if (currentLocation) {
     const locationUpdate: ILoginLocation = {
       country:     currentLocation.country,
       countryCode: currentLocation.countryCode,

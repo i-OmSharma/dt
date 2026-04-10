@@ -158,14 +158,20 @@ export const loginUser = TryCatch(async (req: Request, res: Response) => {
   // ── Publish to queue (consumer handles retry/fallback) ────────────────────
   const published = await publishOTPDelivery({
     otpId,
-    email: user.email,
-    phone:   user.phoneNumber ?? undefined,
-    otp:     plainOtp,
-    subject: isAdminLogin ? "Admin Login OTP" : "Login OTP — SecOTP",
+    email:    user.email,
+    phone:    user.phoneNumber ?? undefined,
+    otp:      plainOtp,
+    subject:  isAdminLogin ? "Admin Login OTP" : "Login OTP — SecOTP",
     body,
     channels,
     currentChannelIndex: 0,
     retryCount: 0,
+    userName: user.name,
+    context:  isAdminLogin ? "admin-login" : "login",
+    location: geoRisk.currentLocation
+      ? `${geoRisk.currentLocation.city}, ${geoRisk.currentLocation.country}`
+      : "Unknown",
+    channel:  channels[0],
   });
 
   if (!published) {
@@ -185,18 +191,22 @@ export const loginUser = TryCatch(async (req: Request, res: Response) => {
     const loc     = geoRisk.currentLocation;
     const prevLoc = geoRisk.previousLocation;
     publishSecurityAlert({
-      type: "security_alert",
-      email: user.email,
-      subject: "⚠️ Security Alert: Login from New Location",
+      type:      "security_alert",
+      email:     user.email,
+      subject:   "⚠️ Security Alert: Login from New Location",
       body:
         `Hello ${user.name},\n\n` +
         `A login attempt was made from:\n` +
         `📍 ${loc?.city ?? "Unknown"}, ${loc?.country ?? "Unknown"} (IP: ${clientIP})\n` +
         (prevLoc ? `🏠 Your usual location: ${prevLoc.city}, ${prevLoc.country}\n` : "") +
         `\nRisk level: ${geoRisk.riskLevel}\n` +
-        `Reason: ${geoRisk.riskReason ?? "Unknown"}\n\n` +
         `If this was NOT you, change your password immediately.\n\n` +
         `— SecOTP Security Team`,
+      userName:  user.name,
+      location:  loc ? `${loc.city}, ${loc.country}` : "Unknown",
+      ip:        clientIP,
+      riskLevel: geoRisk.riskLevel,
+      resetUrl:  `${process.env.FRONTEND_URL ?? "http://localhost:5173"}/change-password`,
     });
   }
 

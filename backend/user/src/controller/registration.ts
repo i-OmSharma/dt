@@ -84,14 +84,16 @@ export const initiateRegistration = TryCatch(async (req: Request, res: Response)
   // Publish OTP delivery
   const published = await publishOTPDelivery({
     otpId,
-    email: normalizedEmail,
-    phone: normalizedPhone,
-    otp: plainOtp,
-    subject: "Verify your email — SecOTP",
-    body: `Your OTP to complete registration is ${plainOtp}. Valid for 10 minutes. Do not share this with anyone.`,
+    email:    normalizedEmail,
+    phone:    normalizedPhone,
+    otp:      plainOtp,
+    subject:  "Verify your email — SecOTP",
+    body:     `Your OTP to complete registration is ${plainOtp}. Valid for 10 minutes. Do not share this with anyone.`,
     channels,
     currentChannelIndex: 0,
     retryCount: 0,
+    userName: name,
+    context:  "registration",
   });
 
   if (!published) {

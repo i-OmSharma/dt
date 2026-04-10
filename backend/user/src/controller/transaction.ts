@@ -148,14 +148,18 @@ export const initiateTransaction = TryCatch(
     // ── Publish (consumer handles retry/fallback) ───────────────────────────
     const published = await publishOTPDelivery({
       otpId,
-      email:  senderUser.email,
-      phone:  senderUser.phoneNumber ?? undefined,
-      otp:    plainOtp,
-      subject: "Transaction OTP — SecOTP",
-      body:   `Your OTP for transferring ₹${transactionAmount} to account ${recipientAccountNumber} is ${plainOtp}. Valid for ${expiryText}. Do NOT share this.`,
+      email:            senderUser.email,
+      phone:            senderUser.phoneNumber ?? undefined,
+      otp:              plainOtp,
+      subject:          "Transaction OTP — SecOTP",
+      body:             `Your OTP for transferring ₹${transactionAmount} to account ${recipientAccountNumber} is ${plainOtp}. Valid for ${expiryText}. Do NOT share this.`,
       channels,
       currentChannelIndex: 0,
-      retryCount: 0,
+      retryCount:       0,
+      userName:         senderUser.name,
+      context:          "transaction",
+      amount:           transactionAmount,
+      recipientAccount: recipientAccountNumber,
     });
 
     if (!published) {

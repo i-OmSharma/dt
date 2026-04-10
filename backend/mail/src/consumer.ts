@@ -17,7 +17,15 @@ import amqp from "amqplib";
 import nodemailer from "nodemailer";
 import dotenv from "dotenv";
 import { sendSMS, sendVoiceOTP } from "./sms.js";
-import { registrationSuccessTemplate } from "./templates.js";
+import {
+  loginOTPTemplate,
+  transactionOTPTemplate,
+  registrationOTPTemplate,
+  registrationSuccessTemplate,
+  securityAlertTemplate,
+  contactVerificationTemplate,
+  passwordChangedTemplate,
+} from "./templates.js";
 
 dotenv.config();
 
@@ -34,16 +42,28 @@ interface OTPDeliveryMessage {
   channels:            OTPChannel[];
   currentChannelIndex: number;
   retryCount:          number;   // attempts on current channel
+  // Template-selection fields
+  userName?:           string;
+  context?:            string;
+  location?:           string;
+  channel?:            string;
+  amount?:             number;
+  recipientAccount?:   string;
+  contactType?:        "email" | "phone";
 }
 
 interface SecurityAlertMessage {
-  type:           "security_alert" | "registration_success";
+  type:           "security_alert" | "registration_success" | "password_changed";
   email:          string;
   subject:        string;
   body:           string;
   userName?:      string;
   accountNumber?: string;
   balance?:       number;
+  ip?:            string;
+  location?:      string;
+  resetUrl?:      string;
+  riskLevel?:     string;
 }
 
 // ─── Constants ─────────────────────────────────────────────────────────────────
@@ -63,6 +83,36 @@ const transporter = nodemailer.createTransport({
 
 // ─── Channel delivery functions ───────────────────────────────────────────────
 async function deliverViaEmail(msg: OTPDeliveryMessage): Promise<boolean> {
+  // Pick the right HTML template based on context
+  let htmlContent: string | undefined;
+
+  if (msg.context === "transaction") {
+    htmlContent = transactionOTPTemplate(
+      msg.otp,
+      msg.userName ?? "User",
+      msg.amount ?? 0,
+      msg.recipientAccount ?? "N/A",
+      "5 minutes"
+    );
+  } else if (msg.context === "registration") {
+    htmlContent = registrationOTPTemplate(msg.otp, msg.userName ?? "User");
+  } else if (msg.context === "contact-verification") {
+    htmlContent = contactVerificationTemplate(
+      msg.otp,
+      msg.userName ?? "User",
+      msg.contactType ?? "email"
+    );
+  } else {
+    // login / admin-login / any other OTP → login template
+    htmlContent = loginOTPTemplate(
+      msg.otp,
+      msg.userName ?? "User",
+      msg.location ?? "Unknown",
+      5,
+      msg.channel ?? "email"
+    );
+  }
+
   const ac = new AbortController();
   const timer = setTimeout(() => ac.abort(), DELIVERY_TIMEOUT_MS);
   try {
@@ -70,7 +120,8 @@ async function deliverViaEmail(msg: OTPDeliveryMessage): Promise<boolean> {
       from:    `"secOTP" <${process.env.MAIL_USER}>`,
       to:      msg.email,
       subject: msg.subject,
-      text:    msg.body,
+      html:    htmlContent,
+      text:    msg.body,  // plain-text fallback for clients that don't render HTML
     });
     console.log(`[Consumer] ✓ Email delivered → ${msg.email} (otpId: ${msg.otpId})`);
     return true;
@@ -210,6 +261,20 @@ async function handleSecurityAlert(
       msg.email,
       msg.accountNumber ?? "N/A",
       msg.balance ?? 10000
+    );
+  } else if (msg.type === "security_alert") {
+    htmlContent = securityAlertTemplate(
+      msg.userName ?? "User",
+      msg.location ?? "Unknown",
+      msg.ip ?? "Unknown",
+      msg.resetUrl ?? "",
+      msg.riskLevel ?? "MEDIUM"
+    );
+  } else if (msg.type === "password_changed") {
+    htmlContent = passwordChangedTemplate(
+      msg.userName ?? "User",
+      msg.ip ?? "Unknown",
+      msg.location ?? "Unknown"
     );
   }
 

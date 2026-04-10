@@ -31,16 +31,30 @@ export interface DeliveryMessage {
   channels: OTPChannel[];
   currentChannelIndex: number;
   retryCount: number; // retries on current channel
+
+  // Template-selection fields (optional — consumer picks template when present)
+  userName?:        string;
+  context?:         string;
+  location?:        string;
+  channel?:         string;
+  amount?:          number;
+  recipientAccount?: string;
+  contactType?:     "email" | "phone";
 }
 
 export interface SecurityAlertMessage {
-  type:           "security_alert" | "registration_success";
+  type:           "security_alert" | "registration_success" | "password_changed";
   email:          string;
   subject:        string;
   body:           string;
   userName?:      string;
   accountNumber?: string;
   balance?:       number;
+  // Security alert fields
+  ip?:            string;
+  location?:      string;
+  resetUrl?:      string;
+  riskLevel?:     string;
 }
 
 // ─── Resolve channel priority based on available contact info ─────────────────

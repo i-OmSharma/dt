@@ -50,14 +50,17 @@ export const initiateContactVerification = TryCatch(
 
     const published = await publishOTPDelivery({
       otpId,
-      email: user.email,
-      phone: type === "phone" ? (user.phoneNumber ?? undefined) : undefined,
-      otp: plainOtp,
+      email:       user.email,
+      phone:       type === "phone" ? (user.phoneNumber ?? undefined) : undefined,
+      otp:         plainOtp,
       subject,
       body,
       channels,
       currentChannelIndex: 0,
-      retryCount: 0,
+      retryCount:  0,
+      userName:    user.name,
+      context:     "contact-verification",
+      contactType: type as "email" | "phone",
     });
 
     if (!published) {
