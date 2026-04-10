@@ -1,5 +1,5 @@
 import React from "react";
-import { Home as HomeIcon, Banknote, History, Send, LogOut } from "lucide-react";
+import { Home as HomeIcon, Banknote, History, Send, LogOut, Settings } from "lucide-react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
 import { authHelpers } from "../services/api";
 
@@ -22,6 +22,7 @@ export default function SideBar() {
         <SidebarItem icon={<Banknote size={18} />} label="My Bank" to="/mybanks" />
         <SidebarItem icon={<History size={18} />} label="Transactions" to="/transactions" />
         <SidebarItem icon={<Send size={18} />} label="Transfer Funds" to="/transfer" />
+        <SidebarItem icon={<Settings size={18} />} label="Account Settings" to="/account-settings" />
       </nav>
 
       {/* 🔴 Logout button (logic only) */}

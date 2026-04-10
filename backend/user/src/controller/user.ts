@@ -272,13 +272,14 @@ export const getBalance = TryCatch(
   }
 );
 
-// ─── Update Name ───────────────────────────────────────────────────────────────
+// ─── Update Profile (name + dob) ───────────────────────────────────────────────
 export const updateName = TryCatch(
   async (req: AuthenticatedRequest, res: Response) => {
     const user = await User.findById(req.user?._id);
     if (!user) return res.status(404).json({ message: "User not found" });
 
-    user.name = req.body.name;
+    if (req.body.name) user.name = req.body.name;
+    if (req.body.dob !== undefined) user.dob = req.body.dob;
     await user.save();
     const token = generateToken(user);
 
@@ -292,6 +293,7 @@ export const updateName = TryCatch(
         balance:       user.balance,
         phoneNumber:   user.phoneNumber,
         isAdmin:       user.isAdmin,
+        dob:           user.dob,
       },
       token,
     });

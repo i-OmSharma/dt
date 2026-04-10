@@ -26,6 +26,7 @@ export interface IUser extends Document {
   isAdmin: boolean;
   emailVerified: boolean;
   phoneVerified: boolean;
+  dob?: string;
   // persisted location — NOT in Redis (survives restarts, needed for risk comparison)
   lastLoginLocation?: ILoginLocation;
   comparePassword(candidatePassword: string): Promise<boolean>;
@@ -91,6 +92,10 @@ const UserSchema = new Schema<IUser>(
     phoneVerified: {
       type:    Boolean,
       default: false,
+    },
+    dob: {
+      type:    String,
+      default: null,
     },
     lastLoginLocation: {
       type: LoginLocationSchema,

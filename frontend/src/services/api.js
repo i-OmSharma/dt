@@ -151,6 +151,26 @@ export const authAPI = {
       method: "POST",
       body: JSON.stringify({ otpId, otp }),
     }),
+
+  initiateChangePassword: (data) =>
+    apiRequest("/change-password/initiate", {
+      method: "POST",
+      body: JSON.stringify({
+        phoneNumber: data.phoneNumber,
+        oldPassword: data.oldPassword,
+      }),
+    }),
+
+  verifyChangePassword: (data) =>
+    apiRequest("/change-password/verify", {
+      method: "POST",
+      body: JSON.stringify({
+        otpId:           data.otpId,
+        otp:             data.otp,
+        newPassword:     data.newPassword,
+        confirmPassword: data.confirmPassword,
+      }),
+    }),
 };
 
 // ─── User API ──────────────────────────────────────────────────────────────────
@@ -172,6 +192,62 @@ export const userAPI = {
         otpId: data.otpId,
         otp:   data.otp,
         type:  data.type,
+      }),
+    }),
+
+  updateProfile: (data) =>
+    apiRequest("/update/user", {
+      method: "POST",
+      body: JSON.stringify({
+        name: data.name,
+        dob:  data.dob,
+      }),
+    }),
+
+  initiateEmailChange: (data) =>
+    apiRequest("/settings/email/initiate", {
+      method: "POST",
+      body: JSON.stringify({
+        newEmail: data.newEmail,
+        password: data.password,
+      }),
+    }),
+
+  verifyEmailChange: (data) =>
+    apiRequest("/settings/email/verify", {
+      method: "POST",
+      body: JSON.stringify({ otpId: data.otpId, otp: data.otp }),
+    }),
+
+  initiatePhoneChange: (data) =>
+    apiRequest("/settings/phone/initiate", {
+      method: "POST",
+      body: JSON.stringify({
+        newPhone: data.newPhone,
+        password: data.password,
+      }),
+    }),
+
+  verifyPhoneChange: (data) =>
+    apiRequest("/settings/phone/verify", {
+      method: "POST",
+      body: JSON.stringify({ otpId: data.otpId, otp: data.otp }),
+    }),
+
+  initiatePasswordChangeSetting: (data) =>
+    apiRequest("/settings/password/initiate", {
+      method: "POST",
+      body: JSON.stringify({ oldPassword: data.oldPassword }),
+    }),
+
+  verifyPasswordChangeSetting: (data) =>
+    apiRequest("/settings/password/verify", {
+      method: "POST",
+      body: JSON.stringify({
+        otpId:           data.otpId,
+        otp:             data.otp,
+        newPassword:     data.newPassword,
+        confirmPassword: data.confirmPassword,
       }),
     }),
 };
